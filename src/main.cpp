@@ -165,12 +165,10 @@ void sendVolumeUp()   { bleKeyboard.write(KEY_MEDIA_VOLUME_UP); }
 void sendVolumeDown() { bleKeyboard.write(KEY_MEDIA_VOLUME_DOWN); }
 void sendNextTrack()  { bleKeyboard.write(KEY_MEDIA_NEXT_TRACK); }
 void sendPrevTrack()  { bleKeyboard.write(KEY_MEDIA_PREVIOUS_TRACK); }
-void sendBrightnessUp() {
-  bleKeyboard.write(KEY_MEDIA_BRIGHTNESS_UP);
-}
-void sendBrightnessDown() {
-  bleKeyboard.write(KEY_MEDIA_BRIGHTNESS_DOWN);
-}
+void sendBrightnessUp() { bleKeyboard.write(KEY_MEDIA_BRIGHTNESS_UP); }
+void sendBrightnessDown() { bleKeyboard.write(KEY_MEDIA_BRIGHTNESS_DOWN); }
+void sendPageDown() { bleKeyboard.write(KEY_UP_ARROW); }
+void sendPageUp() { bleKeyboard.write(KEY_DOWN_ARROW); }
 
 // -------------------- setup --------------------
 void setup() {
@@ -467,8 +465,10 @@ void loop() {
         if (currentMode == MODE_VOLUME) {
           pos_p_value = m1.detent_pos_p; num_detents = m1.detents; threshold = m1.threshold; vel_p_value_in_limits = m1.solid_p;
         } else if (currentMode == MODE_SCROLL) {
-          vel_p_value_in_limits = m2.pos_p;
           vel_p_value = m2.vel_p;
+          pos_p_value = m2.pos_p;
+          // If you want the "within limits" P to be something else, set it explicitly here
+          vel_p_value_in_limits = 1.0f;
         } else if (currentMode == MODE_SNAP) {
           // nothing to sync globally except params already in m3
         } else if (currentMode == MODE_BRIGHT) {
@@ -530,30 +530,35 @@ void loop() {
       break;
     }
 
-    case MODE_SCROLL: {
-      // accumulate delta steps from angle differences
-      float d_ang = angleDiff(motor_angle, prev_motor_angle);
-      prev_motor_angle = motor_angle;
-      float steps_per_rev = (float)m2.detent_density;
-      float step_per_rad = steps_per_rev / (2.0f * PI);
-      float d_steps = d_ang * step_per_rad;
-      virtual_unbounded_position += d_steps;
-      long virtual_step = (long)round(virtual_unbounded_position);
-      if (virtual_step != last_virtual_step_sent) {
-        if (virtual_step > last_virtual_step_sent) {
-          bleKeyboard.write(KEY_PAGE_UP);
-        } else {
-          bleKeyboard.write(KEY_PAGE_DOWN);
+      case MODE_SCROLL: {
+    static long last_detent_idx = 0;
+
+    // --- Determine current detent index ---
+    float steps_per_rev = (float)m2.detent_density;
+    float detent_angle = (2.0f * PI) / steps_per_rev;
+
+    long detent_idx = (long)round(motor_angle / detent_angle);
+
+    // --- Detect detent change ---
+    if (detent_idx != last_detent_idx) {
+        // Always send Page Up on every detent step
+        if(detent_idx< last_detent_idx){
+        sendPageUp();
+        }else{
+        sendPageDown();
         }
-        last_virtual_step_sent = virtual_step;
-      }
-      // snap target to virtual detent angle to provide haptic detents
-      float detent_angle = (2.0f * PI) / steps_per_rev;
-      nearest_angle = motor_angle - fmod(motor_angle, detent_angle);
-      motor.P_angle.P = m2.detent_p;
-      motor.PID_velocity.P = m2.vel_p;
-      break;
+        last_detent_idx = detent_idx;
     }
+
+    // --- Haptics: snap motor to nearest detent ---
+    nearest_angle = detent_idx * detent_angle;
+
+    motor.P_angle.P      = m2.pos_p;
+    motor.PID_velocity.P = m2.vel_p;
+
+    break;
+}
+
 
     case MODE_SNAP: {
       float center = (left_limit + right_limit) * 0.5f;
