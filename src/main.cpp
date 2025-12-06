@@ -1,7 +1,3 @@
-// knob_modes_fixed.cpp
-// Integrated: fixed encoder double-step (HW-040, 2 pulses/detent), single I2C on pins 9/8,
-// per-item submenus navigated with encoder button, motor FOC fixes and mode logic.
-
 #include <Arduino.h>
 #include <Wire.h>
 #include <SimpleFOC.h>
@@ -10,8 +6,7 @@
 #include <NimBleKeyboard.h>
 
 BleKeyboard bleKeyboard;
-
-// 'knob menu', 128x64px (original bitmap from starting point)
+/*
 const unsigned char epd_bitmap_knob_menu [] PROGMEM = { 
   0x1f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xc2,
   0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x24,
@@ -73,7 +68,7 @@ const unsigned char epd_bitmap_knob_menu [] PROGMEM = {
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
-
+*/
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
@@ -89,15 +84,14 @@ BLDCDriver3PWM driver = BLDCDriver3PWM(5, 6, 7, 4);
 // -------------------- default haptic params (kept from original) --------------------
 float right_limit = 6.14;
 float left_limit = 3.0;
-
 float num_detents = 16;
 float vel_p_value = 1.0f;
 float vel_p_value_in_limits = 0.45f;
 float vel_i_value = 0.0f;
-float vel_d_value = 0.001f;
+float vel_d_value = 0.00f;
 float pos_p_value = 30.0f;
 float tf_value = 4.0f;
-float threshold = 1.0f;
+float threshold = 0.35f;
 int prev_step = -999;
 
 // commander for CLI (kept)
@@ -133,7 +127,7 @@ int submenu_index = 0;
 
 // per-mode params (individual items editable)
 struct Mode1_Params { float detent_pos_p; int detents; float threshold; float solid_p; int right_quads; } m1;
-struct Mode2_Params { int detent_density; float detent_p; float vel_p; } m2;
+struct Mode2_Params { int detent_density; float detent_p; float vel_p; float pos_p; } m2;
 struct Mode3_Params { float stiffness; float sensitivity; } m3;
 struct Mode4_Params { float detent_pos_p; int detents; float threshold; float solid_p; int right_quads; } m4;
 
@@ -141,12 +135,13 @@ void initModeParams() {
   m1.detent_pos_p = pos_p_value;
   m1.detents = (int)num_detents;
   m1.threshold = threshold;
-  m1.solid_p = 8.0f;
+  m1.solid_p = 1.0f;
   m1.right_quads = 0;
 
   m2.detent_density = 12;
   m2.detent_p = 20.0f;
-  m2.vel_p = vel_p_value;
+  m2.vel_p = 1.0f;
+  m2.pos_p = pos_p_value;
 
   m3.stiffness = 8.0f;
   m3.sensitivity = 0.3f;
@@ -171,18 +166,10 @@ void sendVolumeDown() { bleKeyboard.write(KEY_MEDIA_VOLUME_DOWN); }
 void sendNextTrack()  { bleKeyboard.write(KEY_MEDIA_NEXT_TRACK); }
 void sendPrevTrack()  { bleKeyboard.write(KEY_MEDIA_PREVIOUS_TRACK); }
 void sendBrightnessUp() {
-#ifdef KEY_MEDIA_BRIGHTNESS_UP
   bleKeyboard.write(KEY_MEDIA_BRIGHTNESS_UP);
-#else
-  bleKeyboard.write(KEY_PAGE_UP);
-#endif
 }
 void sendBrightnessDown() {
-#ifdef KEY_MEDIA_BRIGHTNESS_DOWN
   bleKeyboard.write(KEY_MEDIA_BRIGHTNESS_DOWN);
-#else
-  bleKeyboard.write(KEY_PAGE_DOWN);
-#endif
 }
 
 // -------------------- setup --------------------
@@ -205,7 +192,9 @@ void setup() {
   display.clearDisplay();
 
   // draw initial bitmap welcome
-  display.drawBitmap(0, 0, epd_bitmap_knob_menu, 128, 64, SSD1306_WHITE);
+  // display.drawBitmap(0, 0, epd_bitmap_knob_menu, 128, 64, SSD1306_WHITE);
+  display.setCursor(0,0);
+  display.print("Hello! Starting Setup");
   display.display();
 
   // init sensor & motor AFTER Wire started
@@ -244,12 +233,10 @@ void setup() {
   delay(500);
 }
 
-// -------------------- encoder functions --------------------
-// configure pins, set initial last state
+// -------------------- encoder pin definitions
 void setupEncoderPins() {
   pinMode(ENC_A_PIN, INPUT_PULLUP);
   pinMode(ENC_B_PIN, INPUT_PULLUP);
-  // use internal pullup for stable button reading (HW may not have pullup)
   pinMode(ENC_BTN_PIN, INPUT_PULLUP);
 
   last_enc_state = (digitalRead(ENC_A_PIN) << 1) | digitalRead(ENC_B_PIN);
@@ -333,24 +320,25 @@ void drawSubmenu(TopMode m) {
   display.setCursor(0,0);
   switch(m) {
     case MODE_VOLUME:
-      display.println(F("Mode1: Bounded Volume"));
+      display.println(F("1:Limited Vol Control"));
       display.println();
       // items: 0 detent_pos_p, 1 detents, 2 threshold, 3 solid_p, 4 right_quads, 5 EXIT
-      display.print(submenu_index==0?"> ":"  "); display.print(F("Detent P: ")); display.println(fstr(m1.detent_pos_p,1));
-      display.print(submenu_index==1?"> ":"  "); display.print(F("Detents: ")); display.println(m1.detents);
-      display.print(submenu_index==2?"> ":"  "); display.print(F("Threshold: ")); display.println(fstr(m1.threshold,2));
-      display.print(submenu_index==3?"> ":"  "); display.print(F("Solid P: ")); display.println(fstr(m1.solid_p,1));
-      display.print(submenu_index==4?"> ":"  "); display.print(F("Range +90 *: ")); display.println(m1.right_quads);
+      display.print(submenu_index==0?"> ":"  "); display.print(F("Det. Start Str: ")); display.println((int)m1.detent_pos_p);
+      display.print(submenu_index==1?"> ":"  "); display.print(F("Num of detents: ")); display.println(m1.detents);
+      display.print(submenu_index==2?"> ":"  "); display.print(F("Deadzone size: ")); display.println(fstr(m1.threshold,2));
+      display.print(submenu_index==3?"> ":"  "); display.print(F("Det End Str: ")); display.println(fstr(m1.solid_p,1));
+      display.print(submenu_index==4?"> ":"  "); display.print(F("Range: ")); display.println(m1.right_quads);
       display.print(submenu_index==5?"> ":"  "); display.println(F("EXIT"));
       break;
     case MODE_SCROLL:
-      display.println(F("Mode2: Unbounded Scroll"));
+      display.println(F("Mode2: Scroll Wheel"));
       display.println();
       // items: 0 detent_density,1 detent_p,2 vel_p,3 EXIT
-      display.print(submenu_index==0?"> ":"  "); display.print(F("Density: ")); display.println(m2.detent_density);
+      display.print(submenu_index==0?"> ":"  "); display.print(F("Detent Density: ")); display.println(m2.detent_density);
       display.print(submenu_index==1?"> ":"  "); display.print(F("Detent P: ")); display.println(fstr(m2.detent_p,1));
       display.print(submenu_index==2?"> ":"  "); display.print(F("Vel P: ")); display.println(fstr(m2.vel_p,2));
-      display.print(submenu_index==3?"> ":"  "); display.println(F("EXIT"));
+      display.print(submenu_index==3?"> ":"  "); display.print(F("Pos P: ")); display.println(fstr(m2.pos_p,2));
+      display.print(submenu_index==4?"> ":"  "); display.println(F("EXIT"));
       break;
     case MODE_SNAP:
       display.println(F("Mode3: Snap Middle"));
@@ -412,10 +400,10 @@ void loop() {
       switch (currentMode) {
         case MODE_VOLUME:
           // submenu items: 0 detent_pos_p, 1 detents, 2 threshold, 3 solid_p, 4 right_quads, 5 EXIT
-          if (submenu_index == 0) { m1.detent_pos_p = constrain(m1.detent_pos_p + steps * 1.0f, 0.0f, 200.0f); pos_p_value = m1.detent_pos_p; }
+          if (submenu_index == 0) { m1.detent_pos_p = constrain(m1.detent_pos_p + steps * 1.0f, 0.0f, 30.0f); pos_p_value = m1.detent_pos_p; }
           else if (submenu_index == 1) { m1.detents = constrain(m1.detents + steps, 1, 128); num_detents = m1.detents; }
-          else if (submenu_index == 2) { m1.threshold = constrain(m1.threshold + steps * 0.05f, 0.0f, 5.0f); threshold = m1.threshold; }
-          else if (submenu_index == 3) { m1.solid_p = constrain(m1.solid_p + steps * 0.5f, 0.0f, 200.0f); vel_p_value_in_limits = m1.solid_p; }
+          else if (submenu_index == 2) { m1.threshold = constrain(m1.threshold + steps * 0.05f, 0.0f, 1.0f); threshold = m1.threshold; }
+          else if (submenu_index == 3) { m1.solid_p = constrain(m1.solid_p + steps * 0.1f, 0.0f, 1.5f); vel_p_value_in_limits = m1.solid_p; }
           else if (submenu_index == 4) { m1.right_quads = constrain(m1.right_quads + steps, 0, 3); }
           // exit (5) not editable
           drawSubmenu(MODE_VOLUME);
@@ -424,7 +412,8 @@ void loop() {
           // items: 0 density,1 detent_p,2 vel_p,3 EXIT
           if (submenu_index == 0) { m2.detent_density = constrain(m2.detent_density + steps, 1, 360); }
           else if (submenu_index == 1) { m2.detent_p = constrain(m2.detent_p + steps * 1.0f, 0.0f, 200.0f); }
-          else if (submenu_index == 2) { m2.vel_p = constrain(m2.vel_p + steps * 0.05f, 0.0f, 50.0f); vel_p_value = m2.vel_p; }
+          else if (submenu_index == 2) { m2.vel_p = constrain(m2.vel_p + steps * 0.05f, 0.0f, 2.0f); vel_p_value = m2.vel_p; }
+          else if (submenu_index == 3) { m2.pos_p = constrain(m2.pos_p + steps * 0.5f, 0.0f, 100.0f); pos_p_value = m2.vel_p; }
           drawSubmenu(MODE_SCROLL);
           break;
         case MODE_SNAP:
@@ -467,7 +456,7 @@ void loop() {
       int itemsCount = 1;
       switch (currentMode) {
         case MODE_VOLUME: itemsCount = 6; break; // 5 items + EXIT
-        case MODE_SCROLL: itemsCount = 4; break;
+        case MODE_SCROLL: itemsCount = 5; break;
         case MODE_SNAP: itemsCount = 3; break;
         case MODE_BRIGHT: itemsCount = 6; break;
         default: itemsCount = 1; break;
@@ -478,6 +467,7 @@ void loop() {
         if (currentMode == MODE_VOLUME) {
           pos_p_value = m1.detent_pos_p; num_detents = m1.detents; threshold = m1.threshold; vel_p_value_in_limits = m1.solid_p;
         } else if (currentMode == MODE_SCROLL) {
+          vel_p_value_in_limits = m2.pos_p;
           vel_p_value = m2.vel_p;
         } else if (currentMode == MODE_SNAP) {
           // nothing to sync globally except params already in m3
@@ -605,8 +595,8 @@ void loop() {
         float current_step = round((motor_angle - left_limit) / step_size);
         int current_step_int = (int)current_step;
         if (prev_step != current_step_int) {
-          if (prev_step < current_step_int) sendBrightnessUp();
-          else sendBrightnessDown();
+          if (prev_step < current_step_int) sendBrightnessDown();
+          else sendBrightnessUp();
         }
         prev_step = current_step_int;
         nearest_angle = left_limit + (current_step * step_size);
