@@ -561,29 +561,70 @@ void loop() {
 
 
     case MODE_SNAP: {
-      float center = (left_limit + right_limit) * 0.5f;
-      float dfc = angleDiff(motor_angle, center);
-      float absdfc = fabs(dfc);
-      if (dfc > m3.sensitivity && !snap_sent_right) {
+    float center = (left_limit + right_limit) * 0.5f;
+    float dfc = angleDiff(motor_angle, center);
+    float absdfc = fabs(dfc);
+
+    // ---------------------------
+    // 1. Gesture logic (unchanged)
+    // ---------------------------
+    if (dfc > m3.sensitivity && !snap_sent_right) {
         sendNextTrack();
-        snap_sent_right = true; snap_sent_left = false;
-      }
-      if (dfc < -m3.sensitivity && !snap_sent_left) {
-        sendPrevTrack();
-        snap_sent_left = true; snap_sent_right = false;
-      }
-      if (absdfc < (m3.sensitivity * 0.5f)) { snap_sent_left = snap_sent_right = false; }
-      if (absdfc < (m3.sensitivity * 1.5f)) {
-        nearest_angle = center;
-        motor.P_angle.P = m3.stiffness * 4.0f;
-        motor.PID_velocity.P = vel_p_value_in_limits;
-      } else {
-        nearest_angle = motor_angle;
-        motor.P_angle.P = m3.stiffness;
-        motor.PID_velocity.P = vel_p_value;
-      }
-      break;
+        snap_sent_right = true;
+        snap_sent_left  = false;
     }
+    if (dfc < -m3.sensitivity && !snap_sent_left) {
+        sendPrevTrack();
+        snap_sent_left  = true;
+        snap_sent_right = false;
+    }
+
+    // Reset flags when back in neutral zone
+    if (absdfc < (m3.sensitivity * 0.5f)) {
+        snap_sent_left = snap_sent_right = false;
+    }
+
+    // ---------------------------
+    // 2. One-way detent behavior
+    // ---------------------------
+
+    float threshold = m3.sensitivity;
+
+    if (absdfc < threshold) {
+        // A) Neutral zone → strong center detent
+        nearest_angle = center;
+        motor.P_angle.P      = m3.stiffness * 4.0f;   // strong center hold
+        motor.PID_velocity.P = vel_p_value_in_limits;
+
+    } else {
+        // B) Outside threshold:
+        // Outward crossing should give a detent,
+        // but inward crossing SHOULD NOT.
+
+        // Determine outward-threshold detent angle
+        float detent_offset = (dfc > 0 ? threshold : -threshold);
+        float detent_angle = center + detent_offset;
+
+        // Check direction of travel to apply one-way behavior
+        bool moving_outward  = (dfc > threshold && (int)motor.shaft_velocity > 0) ||
+                               (dfc < -threshold && (int)motor.shaft_velocity < 0);
+
+        if (moving_outward) {
+            // OUTWARD → place detent at threshold
+            nearest_angle       = detent_angle;
+            motor.P_angle.P      = m3.stiffness * 2.0f;   // medium detent feel
+            motor.PID_velocity.P = vel_p_value_in_limits;
+        } else {
+            // INWARD → no detent, smooth return
+            nearest_angle       = center;
+            motor.P_angle.P      = m3.stiffness * 1.0f;   // soft guiding spring
+            motor.PID_velocity.P = vel_p_value_in_limits;
+        }
+    }
+
+    break;
+}
+
 
     case MODE_BRIGHT: {
       float q90 = (PI/2.0f) * (float)m4.right_quads;
