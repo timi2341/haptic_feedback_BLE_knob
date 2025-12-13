@@ -94,7 +94,7 @@ float tf_value = 4.0f;
 float threshold = 0.35f;
 int prev_step = -999;
 
-// commander for CLI (kept)
+// commander for CLI 
 Commander command = Commander(Serial);
 void changeNumOfDetents(char* cmd) { command.scalar(&num_detents, cmd); Serial.println("Changed num of detents"); }
 void changePVal(char* cmd) { command.scalar(&vel_p_value, cmd); Serial.println("changed P Parameter"); }
@@ -108,7 +108,7 @@ void changePLVal(char* cmd) { command.scalar(&vel_p_value_in_limits, cmd); Seria
 // -------------------- encoder pins (mechanical HW-040) --------------------
 const uint8_t ENC_A_PIN = 2; // encoder A
 const uint8_t ENC_B_PIN = 3; // encoder B
-const uint8_t ENC_BTN_PIN = 1; // encoder button (user wiring) - note: GPIO1 is UART TX; if unstable, consider moving
+const uint8_t ENC_BTN_PIN = 1; // encoder button 
 
 // encoder state helpers
 volatile int enc_raw_accum = 0; // accumulate raw transitions
@@ -175,7 +175,7 @@ void setup() {
   Serial.begin(115200);
   bleKeyboard.begin();
 
-  // Initialize single I2C bus on SDA=9, SCL=8 (per your wiring)
+  // Initialize single I2C bus on SDA=9, SCL=8 
   // Use 400kHz for AS5600
   Wire.begin(/*sda=*/9, /*scl=*/8, /*frequency=*/400000);
 
@@ -189,13 +189,10 @@ void setup() {
   display.setTextSize(1);
   display.clearDisplay();
 
-  // draw initial bitmap welcome
-  // display.drawBitmap(0, 0, epd_bitmap_knob_menu, 128, 64, SSD1306_WHITE);
   display.setCursor(0,0);
   display.print("Hello! Starting Setup");
   display.display();
 
-  // init sensor & motor AFTER Wire started
   sensor.init();
   motor.linkSensor(&sensor);
   driver.voltage_power_supply = 12;
@@ -207,10 +204,8 @@ void setup() {
   motor.useMonitoring(Serial);
   motor.init();
 
-  // init FOC - must be after sensor and motor.init()
   motor.initFOC();
 
-  // add commander CLI as before
   command.add('s', changePosPVal, "POS P Value");
   command.add('t', changeNumOfDetents, "Number of detents");
   command.add('p', changePVal, "P Value");
@@ -220,11 +215,9 @@ void setup() {
   command.add('f', changeFVal, "Tf Value");
   command.add('h', changeTh, "Threshold Value");
 
-  // encoder pins
   setupEncoderPins();
   initModeParams();
 
-  // initial UI
   drawMainMenu();
 
   Serial.println(F("Setup complete. Motor ready."));
@@ -380,21 +373,15 @@ long last_virtual_step_sent = 0;
 
 // -------------------- main loop --------------------
 void loop() {
-  // poll encoder many times per loop
   pollEncoder();
 
-  // process encoder raw accumulation: HW-040 ~ 2 transitions per detent
-  // We act when abs(enc_raw_accum) >= 2 -> one detent step (signed).
   if (enc_raw_accum >= 2 || enc_raw_accum <= -2) {
-    int steps = enc_raw_accum / 2; // integer division: e.g. 3/2 = 1 => OK
-    enc_raw_accum -= steps * 2;    // consume those transitions
-    // Use steps for UI or value change
+    int steps = enc_raw_accum / 2; 
+    enc_raw_accum -= steps * 2;    
     if (!inSubmenu) {
-      // navigate main menu up/down
-      mainMenuCursor = constrain(mainMenuCursor - steps, 0, 4); // invert direction if needed
+      mainMenuCursor = constrain(mainMenuCursor - steps, 0, 4); 
       drawMainMenu();
     } else {
-      // modify the currently selected submenu item based on currentMode & submenu_index
       switch (currentMode) {
         case MODE_VOLUME:
           // submenu items: 0 detent_pos_p, 1 detents, 2 threshold, 3 solid_p, 4 right_quads, 5 EXIT
@@ -435,7 +422,6 @@ void loop() {
     }
   }
 
-  // handle encoder button press: advance submenu item (or enter submenu)
   if (buttonPressed()) {
     if (!inSubmenu) {
       // Enter submenu (unless Exit)
@@ -453,7 +439,7 @@ void loop() {
       // In submenu: advance the submenu index; if hits EXIT index -> leave
       int itemsCount = 1;
       switch (currentMode) {
-        case MODE_VOLUME: itemsCount = 6; break; // 5 items + EXIT
+        case MODE_VOLUME: itemsCount = 6; break; 
         case MODE_SCROLL: itemsCount = 5; break;
         case MODE_SNAP: itemsCount = 3; break;
         case MODE_BRIGHT: itemsCount = 6; break;
@@ -461,16 +447,14 @@ void loop() {
       }
       submenu_index++;
       if (submenu_index >= itemsCount) {
-        // apply final param mappings when leaving submenu
+        // apply final param mappings
         if (currentMode == MODE_VOLUME) {
           pos_p_value = m1.detent_pos_p; num_detents = m1.detents; threshold = m1.threshold; vel_p_value_in_limits = m1.solid_p;
         } else if (currentMode == MODE_SCROLL) {
           vel_p_value = m2.vel_p;
           pos_p_value = m2.pos_p;
-          // If you want the "within limits" P to be something else, set it explicitly here
           vel_p_value_in_limits = 1.0f;
         } else if (currentMode == MODE_SNAP) {
-          // nothing to sync globally except params already in m3
         } else if (currentMode == MODE_BRIGHT) {
           pos_p_value = m4.detent_pos_p; num_detents = m4.detents; threshold = m4.threshold; vel_p_value_in_limits = m4.solid_p;
         }
@@ -564,10 +548,6 @@ void loop() {
     float center = (left_limit + right_limit) * 0.5f;
     float dfc = angleDiff(motor_angle, center);
     float absdfc = fabs(dfc);
-
-    // ---------------------------
-    // 1. Gesture logic (unchanged)
-    // ---------------------------
     if (dfc > m3.sensitivity && !snap_sent_right) {
         sendNextTrack();
         snap_sent_right = true;
@@ -584,24 +564,19 @@ void loop() {
         snap_sent_left = snap_sent_right = false;
     }
 
-    // ---------------------------
-    // 2. One-way detent behavior
-    // ---------------------------
+    // One-way detent behavior
 
     float threshold = m3.sensitivity;
 
     if (absdfc < threshold) {
-        // A) Neutral zone → strong center detent
+        // neutral zone , strong center detent
         nearest_angle = center;
         motor.P_angle.P      = m3.stiffness * 4.0f;   // strong center hold
         motor.PID_velocity.P = vel_p_value_in_limits;
 
     } else {
-        // B) Outside threshold:
-        // Outward crossing should give a detent,
-        // but inward crossing SHOULD NOT.
+        // outside threshold:
 
-        // Determine outward-threshold detent angle
         float detent_offset = (dfc > 0 ? threshold : -threshold);
         float detent_angle = center + detent_offset;
 
@@ -610,12 +585,12 @@ void loop() {
                                (dfc < -threshold && (int)motor.shaft_velocity < 0);
 
         if (moving_outward) {
-            // OUTWARD → place detent at threshold
+            // OUTWARD , place detent at threshold
             nearest_angle       = detent_angle;
             motor.P_angle.P      = m3.stiffness * 2.0f;   // medium detent feel
             motor.PID_velocity.P = vel_p_value_in_limits;
         } else {
-            // INWARD → no detent, smooth return
+            // INWARD , no detent, smooth return
             nearest_angle       = center;
             motor.P_angle.P      = m3.stiffness * 1.0f;   // soft guiding spring
             motor.PID_velocity.P = vel_p_value_in_limits;
@@ -669,6 +644,5 @@ void loop() {
   motor.move(nearest_angle);
   command.run();
 
-  // small delay to keep loop stable and give time to other tasks
-  // delay(4);
+
 }
