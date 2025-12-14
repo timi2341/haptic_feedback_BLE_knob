@@ -549,12 +549,12 @@ void loop() {
     float dfc = angleDiff(motor_angle, center);
     float absdfc = fabs(dfc);
     if (dfc > m3.sensitivity && !snap_sent_right) {
-        sendNextTrack();
+        sendPrevTrack();
         snap_sent_right = true;
         snap_sent_left  = false;
     }
     if (dfc < -m3.sensitivity && !snap_sent_left) {
-        sendPrevTrack();
+        sendNextTrack();
         snap_sent_left  = true;
         snap_sent_right = false;
     }
